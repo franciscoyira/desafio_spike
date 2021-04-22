@@ -1,0 +1,81 @@
+---
+title: "Desafío Spike Abril 2021 - Predicción de precios de insumos básicos en Chile"
+output: html_notebook
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+
+library(tidyverse)
+library(here)
+library(skimr)
+```
+
+## 1. Importar datos de Precipitaciones e Indicadores Económicos Banco Central
+```{r import-data}
+precipitaciones <-
+  readr::read_csv(
+    "https://github.com/SpikeLab-CL/desafio_spike_precios/raw/main/precipitaciones.csv",
+    col_types = cols(date = col_date(format = "%Y-%m-%d"))
+  )
+
+banco_central <-
+  readr::read_csv(
+    "https://github.com/SpikeLab-CL/desafio_spike_precios/raw/main/banco_central.csv",
+    col_types = cols(Periodo = col_datetime(format = "%Y-%m-%d %H:%M:%S %Z")),
+    locale = locale(decimal_mark = ",", grouping_mark = ".")
+  )
+```
+
+## 2. Análisis de datos. Creación de variables.
+
+### Análisis exploratorio de `precipitaciones`
+
+```{r exploratory-analysis-precip}
+skimr::skim(precipitaciones)
+```
+
+Verificando que la variable `date` corresponde a meses (el componente "día" de la fecha debería tener siempre el mismo valor)
+```{r validation-months}
+precipitaciones %>% 
+  dplyr::pull(date) %>% 
+  lubridate::day() %>% 
+  unique()
+```
+Matriz de correlación:
+```{r}
+precipitaciones %>% 
+  dplyr::select(-date) %>% 
+  # Recortar nombres de variables para que quepan en visualización
+  dplyr::rename_all(.funs = ~str_sub(., 1, 5)) %>% 
+  as.matrix() %>% 
+  cor() %>% 
+  corrplot::corrplot.mixed()
+```
+Conclusiones de análisis exploratorio. 
+En el dataset `precipitaciones` se observa que:
+
+1. No hay missing values para ninguna variable.
+2. El rango de la variable fecha va desde enero de 1979 hasta abril de 2020.
+3. Hay datos para 496 periodos, que corresponden a meses.
+4. Hay 5 regiones (las de más al norte) registran periodos sin precipitaciones.
+5. Tal como se esperaría, la distribución de precipitaciones de las regiones de más al sur está desplazada hacia valores más altos. 
+6. Las precipitaciones entre todas las regiones están positivamente correlacionadas, siendo la menor correlación de 0.47.
+7. Regiones vecinas presentan mayor correlación positiva de precipitaciones.
+
+### Análisis exploratorio de `banco_central`
+
+```{r exploratory-analysis-bc}
+skimr::skim(banco_central)
+```
+
+Hay 611 filas de datos.
+
+```{r}
+
+```
+
