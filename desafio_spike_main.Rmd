@@ -365,3 +365,12 @@ visualize_precip <-
 
 ```
 
+Usa esta función para graficar las precipitaciones para la Región Libertador General Bernardo O'Higgins y para la Región Metropolitana entre las fechas 2000-01-01 y 2020-01-01.
+```{r}
+visualize_precip(
+  region_input = "Libertador_Gral__Bernardo_O_Higgins",
+  fecha_ini = "2000-01-01",
+  fecha_fin = "2020-01-01"
+)
+```
+Se observa que precipitaciones en esta región tienen componente estacional dentro del año pero que existe una tendencia a la baja a lo largo del periodo (cada vez hay menos precipitaciones en los periodos "altos").
