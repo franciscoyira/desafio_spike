@@ -11,27 +11,20 @@ knitr::opts_chunk$set(
 )
 
 library(tidyverse)
+library(magrittr)
 library(here)
+library(assertthat)
 library(skimr)
 ```
 
-## 1. Importar datos de Precipitaciones e Indicadores Económicos Banco Central
+## Importar datos de Precipitaciones
 ```{r import-data}
 precipitaciones <-
   readr::read_csv(
     "https://github.com/SpikeLab-CL/desafio_spike_precios/raw/main/precipitaciones.csv",
     col_types = cols(date = col_date(format = "%Y-%m-%d"))
   )
-
-banco_central <-
-  readr::read_csv(
-    "https://github.com/SpikeLab-CL/desafio_spike_precios/raw/main/banco_central.csv",
-    col_types = cols(Periodo = col_datetime(format = "%Y-%m-%d %H:%M:%S %Z")),
-    locale = locale(decimal_mark = ",", grouping_mark = ".")
-  )
 ```
-
-## 2. Análisis de datos. Creación de variables.
 
 ### Análisis exploratorio de `precipitaciones`
 
@@ -67,15 +60,308 @@ En el dataset `precipitaciones` se observa que:
 6. Las precipitaciones entre todas las regiones están positivamente correlacionadas, siendo la menor correlación de 0.47.
 7. Regiones vecinas presentan mayor correlación positiva de precipitaciones.
 
-### Análisis exploratorio de `banco_central`
+## Importar y explorar datos económicos (Banco Central)
 
+Al parecer hay muchos valores extraños en este dataset así que para empezar lo importaré con todas las columnas como `character` para explorarlo tal cual, y descubrir la mejor forma de parsearlo.
+
+```{r}
+banco_central <-
+  readr::read_csv(
+    "https://github.com/SpikeLab-CL/desafio_spike_precios/raw/main/banco_central.csv",
+    col_types = cols(.default = col_character()))
+```
+
+Datos de variables numéricas están muy sucios; contienen puntos como separador de miles (ej, PIB = 12.603.131), cuando es muy probable que se trate de números más pequeños con dígitos decimales. Estrategia personal: eliminar los separadores de miles, y luego asignar la coma de forma "ad-hoc" según conocimiento específico sobre cada una de las variables
+
+```{r}
+banco_central <- banco_central %>%
+  mutate(Periodo = parse_datetime(Periodo, "%Y-%m-%d %H:%M:%S %Z")) %>%
+  mutate_if(is.character,
+            ~parse_number(str_remove_all(., "\\.")))
+  
+banco_central
+```
+Se observa que columnas que deberían ser numéricas contenían a veces el valor 'a'. El parseo dejó esos datos marcados como missing values (`NA`) que creo que es lo correcto.
+
+Explorando las variables:
 ```{r exploratory-analysis-bc}
 skimr::skim(banco_central)
 ```
 
 Hay 611 filas de datos.
 
+Se observa que las variable de IMACEC tienen 314 valores perdidos. Los cuales están concentrados en los primeros años del dataset.
 ```{r}
+banco_central %>% 
+  select(Periodo, starts_with("Imacec")) %>% 
+  filter(!complete.cases(.)) %>% 
+  pull(Periodo) %>% 
+  hist(breaks = "year", main = "Histograma de Missing Values de IMACEC por Periodo")
+```
+Las variables de PIB, Impuesto al valor agregado y Derecho de importación tienen entre 518 a 519 missing values, los cuales están concentrados en los años anteriores a 2012.
+```{r}
+banco_central %>% 
+  select(Periodo, 
+         starts_with("PIB"), 
+         Derechos_de_Importacion, 
+         Impuesto_al_valor_agregado) %>% 
+  filter(!complete.cases(.)) %>% 
+  pull(Periodo) %>% 
+  hist(breaks = "year", main = "Histograma de Missing Values de PIB, IVA y Derecho de Importación")
+```
+
+Las variables de precios de la gasolina, oro, plata y cobre están disponibles casi en todos los periodos.
+
+Las variables de Ocupación también tienen missing values en aproximadamente 519 periodos, que se concentran en periodos anteriores a 2012
+```{r}
+banco_central %>% 
+  select(Periodo, 
+         starts_with("Ocupación"), 
+         Derechos_de_Importacion, 
+         Impuesto_al_valor_agregado) %>% 
+  filter(!complete.cases(.)) %>% 
+  pull(Periodo) %>% 
+  hist(breaks = "year", main = "Histograma de Missing Values de variables de Ocupación")
+```
+
+### Limpieza de datos económicos
+
+Para priorizar, intentaré limpiar las variables de Imacec y PIB.
+
+#### Limpieza Imacec
+
+Para el Imacec, consultando en el sitio del Banco Central (https://www.bcentral.cl/web/banco-central/areas/estadisticas/imacec) se encuentra que los valores deberían tener órdenes de magnitud cercanos a 100. 
+
+Usaré el primer dígito del Imacec como forma para discriminar (si el valor empieza por ej con 5, es probable que sea cercano a 50 y no a 500). Intuyo que se trata de Imacec con base 100 en un año reciente.
+
+```{r}
+imacec_empalmado <- 
+  banco_central %>% 
+  pull(Imacec_empalmado)
+
+
+str_c(str_sub(imacec_empalmado, end = 1)) %>% 
+  table()
+```
+Creando función para poner separador decimal en función del primer dígito.
+```{r}
+limpiar_imacec <- function(x) {
+  ifelse(
+    # Si el primer dígito es 1, es probable que valor sea "ciento y algo", ej 110, 120
+    str_sub(x, 1, 1) == "1",
+    str_c(
+      str_sub(x, 1, 3),
+      ".",
+      str_sub(x, 4,-1)
+    ),
+    # Si el primer dígito no es 1, es probable que valor sean decenas, ej 50, 60, 70
+    str_c(
+      str_sub(x, 1, 2),
+      ".",
+      str_sub(x, 3,-1)
+    )
+  ) %>% 
+    parse_number()
+}
+```
+
+Aplicar función a todas las variables que empiezan con "Imacec"
+```{r}
+banco_central <- banco_central %>% 
+  mutate_at(vars(starts_with("Imacec")),
+            .funs = limpiar_imacec)
+
+```
+
+Validando que valores tengan sentido:
+```{r}
+banco_central %>% 
+  select(Periodo, starts_with("Imacec")) %>% 
+  na.omit() %>% 
+  pivot_longer(
+    cols = -Periodo,
+    names_to = "Tipo Imacec",
+    values_to = "valor"
+  ) %>% 
+  ggplot(aes(Periodo, valor, color = `Tipo Imacec`)) +
+  geom_line() +
+  scale_y_continuous(labels = scales::comma) +
+  expand_limits(y = 0)
+```
+
+
+(Inserte carita feliz)
+```{r eval=FALSE}
+# devtools::install_github("hadley/emo")
+# emo::ji("smile")
+```
+
+#### Limpieza PIB
+
+Aquí al parecer es más complicado ya que variables de PIB no están normalizadas y distintos subsectores tienen distintos órdenes de magnitud.
+
+Para el PIB me enfocaré en las variables que se preguntan después:
+- PIB total
+- PIB agropecuario y silvícola
+- PIB servicios financieros
+
+Primero haré una función más general de limpieza (parametrizando variables que antes estaban "hard-coded" en la función de limpieza de Imacec):
+```{r}
+limpiar_indicador <- function(x, digitos_caso1 = "1", n_digitos_izq_caso1 = 3) {
+  ifelse(
+    str_sub(x, 1, 1) %in% digitos_caso1,
+    str_c(
+      str_sub(x, 1, n_digitos_izq_caso1),
+      ".",
+      str_sub(x, n_digitos_izq_caso1+1, -1)
+    ),
+    str_c(
+      str_sub(x, 1, n_digitos_izq_caso1-1),
+      ".",
+      str_sub(x, n_digitos_izq_caso1,-1)
+    )
+  ) %>% 
+    parse_number()
+}
+```
+
+
+
+PIB total:
+```{r}
+str_c(str_sub(banco_central$PIB, end = 1)) %>% 
+  table()
+```
+
+```{r}
+banco_central$PIB %>% 
+  limpiar_indicador() %>% 
+  hist(main = "Valores de PIB luego de limpieza")
+```
+
+```{r}
+banco_central %<>% 
+  mutate(PIB = limpiar_indicador(PIB))
+```
+
+
+PIB agropecuario y silvícola:
+```{r}
+df_inspect_pib_agro <-
+  banco_central %>%
+  select(Periodo, PIB_Agropecuario_silvicola) %>%
+  mutate(
+    primer_digito = str_sub(PIB_Agropecuario_silvicola, 1, 1),
+    mes = lubridate::month(Periodo),
+    anio = lubridate::year(Periodo)
+  ) %>% 
+  filter(anio > 2012)
+```
+
+Examinando distribución de primer dígito por año y por mes:
+```{r}
+table(df_inspect_pib_agro$anio, 
+          df_inspect_pib_agro$primer_digito)
+```
+```{r}
+table(df_inspect_pib_agro$mes, 
+          df_inspect_pib_agro$primer_digito)
+```
+Tengo la impresión de que todos los valores están en el mismo orden de magnitud, y que variabilidad de concentra en los meses (estacionalidad)
+
+```{r}
+banco_central$PIB_Agropecuario_silvicola %>% 
+  limpiar_indicador(digitos_caso1 = 1:10, n_digitos_izq_caso1 = 2) %>% 
+  hist(main = "Valores de PIB Agropecuario y silvícola luego de limpieza")
+```
+```{r}
+banco_central %<>% 
+  mutate(PIB_Agropecuario_silvicola = limpiar_indicador(PIB_Agropecuario_silvicola,
+                                                        digitos_caso1 = 1:10,
+                                                        n_digitos_izq_caso1 = 2))
+```
+
+Ahora con el PIB de servicios financieros:
+```{r}
+df_inspect_pib_fin <-
+  banco_central %>%
+  select(Periodo, PIB_Servicios_financieros) %>%
+  mutate(
+    primer_digito = str_sub(PIB_Servicios_financieros, 1, 1),
+    mes = lubridate::month(Periodo),
+    anio = lubridate::year(Periodo)
+  ) %>% 
+  filter(anio > 2012)
+```
+
+Examinando distribución de primer dígito por año y por mes:
+```{r}
+table(df_inspect_pib_fin$anio, 
+          df_inspect_pib_fin$primer_digito)
+```
+
+```{r}
+table(df_inspect_pib_fin$mes, 
+          df_inspect_pib_fin$primer_digito)
+```
+Acá es más evidente que orden de magnitud es el mismo en todos los valores:
+
+```{r}
+banco_central$PIB_Servicios_financieros %>% 
+  limpiar_indicador(digitos_caso1 = 1:10, n_digitos_izq_caso1 = 2) %>% 
+  hist(main = "Valores de PIB Servicios Financieros luego de limpieza")
+```
+
+``
+```{r}
+banco_central %<>% 
+  mutate(PIB_Servicios_financieros = limpiar_indicador(PIB_Servicios_financieros,
+                                                        digitos_caso1 = 1:10,
+                                                        n_digitos_izq_caso1 = 2))
+```
+
+## Visualización
+
+Crear función para graficar series históricas de precipitaciones en un rango determinado.
+Argumentos: nombre de la región, fecha de inicio, fecha de término.
+Además: verificar que región entregada y fechas existan en los datos
+
+```{r}
+visualize_precip <-
+  function(region_input, fecha_ini, fecha_fin) {
+    regiones <-
+      precipitaciones %>%
+      select(-date) %>%
+      colnames()
+    
+    fechas <-
+      precipitaciones$date
+    
+    # Validar que estén en los datos
+    assertthat::assert_that(region_input %in% regiones,
+                            msg = "Error. Región ingresada no se encuentra en dataset")
+    
+    assertthat::assert_that(as.character(fecha_ini) %in% as.character(fechas),
+                            msg = "Error. Fecha de inicio ingresada no se encuentra en dataset")
+    
+    assertthat::assert_that(as.character(fecha_fin) %in% as.character(fechas),
+                            msg = "Error. Fecha final ingresada no se encuentra en dataset")
+    
+    # Filtrar dataset
+    df_filt <-
+      precipitaciones %>%
+      select(date, starts_with(region_input)) %>%
+      filter(date >= lubridate::ymd(fecha_ini),
+             date <= lubridate::ymd(fecha_fin))
+    
+    # Crear visualización
+    ggplot(df_filt,
+           aes_string("date", region_input)) +
+      geom_line() +
+      geom_point() +
+      labs(x = "fecha (mes)")
+    
+  }
 
 ```
 
